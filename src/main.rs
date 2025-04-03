@@ -20,33 +20,6 @@ struct Args {
     verbose: bool,
 }
 
-fn main() {
-    let args = Args::parse();
-
-    let validation_result = match args.blockchain.as_str() {
-        "eth" => validate_eth_address(&args.address, args.verbose),
-        "btc" => validate_btc_address(&args.address, args.verbose),
-        "sol" => validate_sol_address(&args.address, args.verbose),
-        _ => {
-            eprintln!("Unsupported blockchain type: {}", args.blockchain);
-            process::exit(1);
-        }
-    };
-
-    if validation_result.valid {
-        println!("✅ Address is valid!");
-    } else {
-        println!("❌ Invalid address!");
-    }
-
-    if args.verbose {
-        println!("\nValidation details:");
-        for (check, result) in validation_result.details {
-            println!("- {}: {}", check, result);
-        }
-    }
-}
-
 #[derive(Debug)]
 struct ValidationResult {
     valid: bool,
@@ -67,7 +40,44 @@ impl ValidationResult {
     }
 }
 
-fn validate_eth_address(address: &str, _verbose: bool) -> ValidationResult {
+fn main() {
+    let args = parse_input();
+    let validation_result = validate_address(&args);
+    display_results(&validation_result, args.verbose);
+}
+
+fn parse_input() -> Args {
+    Args::parse()
+}
+
+fn validate_address(args: &Args) -> ValidationResult {
+    match args.blockchain.as_str() {
+        "eth" => validate_eth_address(&args.address),
+        "btc" => validate_btc_address(&args.address),
+        "sol" => validate_sol_address(&args.address),
+        _ => {
+            eprintln!("Unsupported blockchain type: {}", args.blockchain);
+            process::exit(1);
+        }
+    }
+}
+
+fn display_results(result: &ValidationResult, verbose: bool) {
+    if result.valid {
+        println!("✅ Address is valid!");
+    } else {
+        println!("❌ Invalid address!");
+    }
+
+    if verbose {
+        println!("\nValidation details:");
+        for (check, result) in &result.details {
+            println!("- {}: {}", check, result);
+        }
+    }
+}
+
+fn validate_eth_address(address: &str) -> ValidationResult {
     let mut result = ValidationResult::new();
 
     // Check if it starts with 0x
@@ -116,29 +126,24 @@ fn validate_eth_address(address: &str, _verbose: bool) -> ValidationResult {
 }
 
 fn validate_eth_checksum(address: &str) -> bool {
-    // Implementation of EIP-55 checksum validation
     let address = address.strip_prefix("0x").unwrap();
     let address_lower = address.to_lowercase();
     
-    // Hash the lowercase address
     let mut hasher = Keccak256::new();
     hasher.update(address_lower.as_bytes());
     let hash = hasher.finalize();
     
-    // Check each character against the hash
     address.chars().zip(address_lower.chars()).enumerate().all(|(i, (actual, lower))| {
         if lower.is_digit(16) {
-            // If it's a digit, no case to check
             true
         } else {
-            // If it's a letter, check if the case matches the hash
             let hash_val = hash[i / 2] >> (if i % 2 == 0 { 4 } else { 0 }) & 0xf;
             (hash_val >= 8) == actual.is_uppercase()
         }
     })
-} 
+}
 
-fn validate_btc_address(address: &str, _verbose: bool) -> ValidationResult {
+fn validate_btc_address(address: &str) -> ValidationResult {
     let mut result = ValidationResult::new();
 
     let first_char = address.chars().next();
@@ -163,7 +168,6 @@ fn validate_btc_address(address: &str, _verbose: bool) -> ValidationResult {
         ),
     );
 
-    // Check length based on address type
     let length_ok = if is_legacy {
         address.len() == 34 || address.len() == 33
     } else if is_p2sh {
@@ -180,7 +184,6 @@ fn validate_btc_address(address: &str, _verbose: bool) -> ValidationResult {
         format!("{} (actual: {})", length_ok, address.len()),
     );
 
-    // Basic base58 check for legacy and P2SH
     if is_legacy || is_p2sh {
         let re = Regex::new(r"^[1-9A-HJ-NP-Za-km-z]+$").unwrap();
         let is_base58 = re.is_match(address);
@@ -194,7 +197,7 @@ fn validate_btc_address(address: &str, _verbose: bool) -> ValidationResult {
     result
 }
 
-fn validate_sol_address(address: &str, verbose: bool) -> ValidationResult {
+fn validate_sol_address(address: &str) -> ValidationResult {
     let mut result = ValidationResult::new();
 
     // Length check
@@ -226,8 +229,8 @@ fn validate_sol_address(address: &str, verbose: bool) -> ValidationResult {
         ),
     );
 
-    // Base58 decoding check (only if other checks pass to avoid unnecessary computation)
-    if result.valid && verbose {
+    // Base58 decoding check
+    if result.valid {
         let decode_result = bs58::decode(address).into_vec();
         let is_valid_encoding = decode_result.is_ok();
         let is_correct_length = decode_result.as_ref().map_or(false, |v| v.len() == 32);
