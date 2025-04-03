@@ -3,67 +3,116 @@ use regex::Regex;
 use sha3::{Digest, Keccak256};
 use std::process;
 
-/// Blockchain address validator
+// Blockchain address validator
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// The blockchain address to validate
+    // The blockchain address to validate
     #[arg(short, long)]
     address: String,
 
-    /// The blockchain type (eth, btc, sol)
+    // The blockchain type (eth, btc, sol)
     #[arg(short, long, default_value = "eth")]
     blockchain: String,
+
+    // Optional: Enable verbose output
+    #[arg(short, long, action)]
+    verbose: bool,
 }
 
 fn main() {
     let args = Args::parse();
 
-    let is_valid = match args.blockchain.as_str() {
-        "eth" => validate_eth_address(&args.address),
-        "btc" => validate_btc_address(&args.address),
-        "sol" => validate_sol_address(&args.address),
+    let validation_result = match args.blockchain.as_str() {
+        "eth" => validate_eth_address(&args.address, args.verbose),
+        "btc" => validate_btc_address(&args.address, args.verbose),
+        "sol" => validate_sol_address(&args.address, args.verbose),
         _ => {
             eprintln!("Unsupported blockchain type: {}", args.blockchain);
             process::exit(1);
         }
     };
 
-    if is_valid {
+    if validation_result.valid {
         println!("✅ Address is valid!");
     } else {
         println!("❌ Invalid address!");
     }
+
+    if args.verbose {
+        println!("\nValidation details:");
+        for (check, result) in validation_result.details {
+            println!("- {}: {}", check, result);
+        }
+    }
 }
 
-fn validate_eth_address(address: &str) -> bool {
-    // Basic Ethereum address validation
-    
+#[derive(Debug)]
+struct ValidationResult {
+    valid: bool,
+    details: Vec<(String, String)>,
+}
+
+impl ValidationResult {
+    fn new() -> Self {
+        Self {
+            valid: true,
+            details: Vec::new(),
+        }
+    }
+
+    fn add_check(&mut self, check: &str, result: bool, message: String) {
+        self.valid = self.valid && result;
+        self.details.push((check.to_string(), message));
+    }
+}
+
+fn validate_eth_address(address: &str, _verbose: bool) -> ValidationResult {
+    let mut result = ValidationResult::new();
+
     // Check if it starts with 0x
-    if !address.starts_with("0x") {
-        return false;
-    }
-    
+    let starts_with_0x = address.starts_with("0x");
+    result.add_check(
+        "Starts with 0x",
+        starts_with_0x,
+        format!("{}", starts_with_0x),
+    );
+
     // Check length (0x + 40 hex chars)
-    if address.len() != 42 {
-        return false;
-    }
-    
+    let correct_length = address.len() == 42;
+    result.add_check(
+        "Length (42 chars)",
+        correct_length,
+        format!("{} (actual: {})", correct_length, address.len()),
+    );
+
     // Check if it's valid hex
     if let Some(hex_part) = address.strip_prefix("0x") {
-        if hex::decode(hex_part).is_err() {
-            return false;
-        }
-        
+        let is_valid_hex = hex::decode(hex_part).is_ok();
+        result.add_check(
+            "Valid hex characters",
+            is_valid_hex,
+            format!("{}", is_valid_hex),
+        );
+
         // Check checksum for mixed-case addresses
         if hex_part.chars().any(|c| c.is_uppercase()) {
-            return validate_eth_checksum(address);
+            let checksum_valid = validate_eth_checksum(address);
+            result.add_check(
+                "EIP-55 checksum",
+                checksum_valid,
+                format!("{}", checksum_valid),
+            );
+        } else {
+            result.add_check(
+                "EIP-55 checksum",
+                true,
+                "skipped (all lowercase)".to_string(),
+            );
         }
-        
-        return true;
     }
-    
-    false
+
+    result
 }
 
 fn validate_eth_checksum(address: &str) -> bool {
@@ -89,57 +138,122 @@ fn validate_eth_checksum(address: &str) -> bool {
     })
 } 
 
-fn validate_btc_address(address: &str) -> bool {
-    // Basic Bitcoin address validation
-    // This is a simplified check - real validation would be more complex
-    
+fn validate_btc_address(address: &str, _verbose: bool) -> ValidationResult {
+    let mut result = ValidationResult::new();
+
+    let first_char = address.chars().next();
+    let is_legacy = first_char == Some('1');
+    let is_p2sh = first_char == Some('3');
+    let is_bech32 = address.starts_with("bc1");
+
+    result.add_check(
+        "Address type",
+        is_legacy || is_p2sh || is_bech32,
+        format!(
+            "{}",
+            if is_legacy {
+                "Legacy (starts with 1)"
+            } else if is_p2sh {
+                "P2SH (starts with 3)"
+            } else if is_bech32 {
+                "Bech32 (starts with bc1)"
+            } else {
+                "Unknown"
+            }
+        ),
+    );
+
     // Check length based on address type
-    match address.chars().next() {
-        // Legacy address starts with 1
-        Some('1') => address.len() == 34 || address.len() == 33,
-        // P2SH address starts with 3
-        Some('3') => address.len() == 34,
-        // Bech32 address starts with bc1
-        _ if address.starts_with("bc1") => address.len() >= 42 && address.len() <= 62,
-        _ => false,
+    let length_ok = if is_legacy {
+        address.len() == 34 || address.len() == 33
+    } else if is_p2sh {
+        address.len() == 34
+    } else if is_bech32 {
+        address.len() >= 42 && address.len() <= 62
+    } else {
+        false
+    };
+
+    result.add_check(
+        "Length",
+        length_ok,
+        format!("{} (actual: {})", length_ok, address.len()),
+    );
+
+    // Basic base58 check for legacy and P2SH
+    if is_legacy || is_p2sh {
+        let re = Regex::new(r"^[1-9A-HJ-NP-Za-km-z]+$").unwrap();
+        let is_base58 = re.is_match(address);
+        result.add_check(
+            "Base58 characters",
+            is_base58,
+            format!("{}", is_base58),
+        );
     }
+
+    result
 }
 
-fn validate_sol_address(address: &str) -> bool {
-    // Solana address validation
-    // Length should be 32-44 characters (base58 encoded 32-byte public key)
-    if address.len() < 32 || address.len() > 44 {
-        return false;
-    }
+fn validate_sol_address(address: &str, verbose: bool) -> ValidationResult {
+    let mut result = ValidationResult::new();
 
-    // Check if it matches the base58 pattern (no 0, O, I, l)
+    // Length check
+    let length_ok = (32..=44).contains(&address.len());
+    result.add_check(
+        "Length (32-44 chars)",
+        length_ok,
+        format!("{} (actual: {})", length_ok, address.len()),
+    );
+
+    // Base58 pattern check
     let re = Regex::new(r"^[1-9A-HJ-NP-Za-km-z]+$").unwrap();
-    if !re.is_match(address) {
-        return false;
+    let is_base58 = re.is_match(address);
+    result.add_check(
+        "Base58 characters",
+        is_base58,
+        format!("{}", is_base58),
+    );
+
+    // First character check
+    let first_char_ok = address.starts_with(|c: char| ('1'..='5').contains(&c));
+    result.add_check(
+        "First character (1-5)",
+        first_char_ok,
+        format!(
+            "{} (actual: {})",
+            first_char_ok,
+            address.chars().next().unwrap_or(' ')
+        ),
+    );
+
+    // Base58 decoding check (only if other checks pass to avoid unnecessary computation)
+    if result.valid && verbose {
+        let decode_result = bs58::decode(address).into_vec();
+        let is_valid_encoding = decode_result.is_ok();
+        let is_correct_length = decode_result.as_ref().map_or(false, |v| v.len() == 32);
+        
+        result.add_check(
+            "Base58 decoding",
+            is_valid_encoding,
+            format!("{}", is_valid_encoding),
+        );
+        
+        if is_valid_encoding {
+            result.add_check(
+                "Decoded length (32 bytes)",
+                is_correct_length,
+                format!(
+                    "{} (actual: {})",
+                    is_correct_length,
+                    decode_result.unwrap().len()
+                ),
+            );
+        }
     }
 
-    // Additional checks:
-    // 1. First character should be 1-5 (most common case)
-    if !address.starts_with(|c: char| ('1'..='5').contains(&c)) {
-        return false;
-    }
-
-    // 2. Try to decode as base58 to verify it's a valid encoding
-    // (This is optional as the regex should catch most invalid cases)
-    bs58::decode(address).into_vec().is_ok_and(|v| v.len() == 32)
+    result
 }
 
- /*In this code, we define a  Args  struct using the  clap  crate to parse command-line arguments. The struct has two fields:  address  and  blockchain . The  address  field is the blockchain address to validate, and the  blockchain  field is the blockchain type ( eth  or  btc ). 
- The  main  function parses the command-line arguments using the  Args::parse()  method. It then calls the appropriate validation function based on the blockchain type. If the address is valid, it prints a success message; otherwise, it prints an error message. 
- The  validate_eth_address  function checks if the Ethereum address is valid. It first checks if the address starts with  0x  and has a length of 42 characters. Then, it checks if the address is a valid hexadecimal string. If the address contains uppercase characters, it calls the  validate_eth_checksum  function to validate the checksum. 
- The  validate_eth_checksum  function implements the EIP-55 checksum validation algorithm. It hashes the lowercase address and checks each character against the hash. If the character is a digit, it doesn’t need to check the case. If the character is a letter, it checks if the case matches the hash. 
- The  validate_btc_address  function checks if the Bitcoin address is valid. It checks the length of the address based on the address type (legacy, P2SH, or Bech32). 
- Now, let’s test the program with some sample addresses. 
- Testing the Blockchain Address Validator 
- To test the blockchain address validator, you can run the program with different blockchain addresses. 
- First, compile the program using the following command: 
- cargo build --release 
- This command compiles the program in release mode, which optimizes the binary for performance. 
- Now, you can run the program with different blockchain addresses. Here are some examples: 
+ /* Now, you can run the program with different blockchain addresses. Here are some examples: 
  ./target/release/blockchain-validator --address 0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2 --blockchain eth
 ./target/release/blockchain-validator --address 1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2 --blockchain btc */
