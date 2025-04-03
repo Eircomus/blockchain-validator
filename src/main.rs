@@ -1,4 +1,5 @@
 use clap::Parser;
+use regex::Regex;
 use sha3::{Digest, Keccak256};
 use std::process;
 
@@ -10,7 +11,7 @@ struct Args {
     #[arg(short, long)]
     address: String,
 
-    /// The blockchain type (eth, btc)
+    /// The blockchain type (eth, btc, sol)
     #[arg(short, long, default_value = "eth")]
     blockchain: String,
 }
@@ -21,6 +22,7 @@ fn main() {
     let is_valid = match args.blockchain.as_str() {
         "eth" => validate_eth_address(&args.address),
         "btc" => validate_btc_address(&args.address),
+        "sol" => validate_sol_address(&args.address),
         _ => {
             eprintln!("Unsupported blockchain type: {}", args.blockchain);
             process::exit(1);
@@ -101,7 +103,32 @@ fn validate_btc_address(address: &str) -> bool {
         _ if address.starts_with("bc1") => address.len() >= 42 && address.len() <= 62,
         _ => false,
     }
-} 
+}
+
+fn validate_sol_address(address: &str) -> bool {
+    // Solana address validation
+    // Length should be 32-44 characters (base58 encoded 32-byte public key)
+    if address.len() < 32 || address.len() > 44 {
+        return false;
+    }
+
+    // Check if it matches the base58 pattern (no 0, O, I, l)
+    let re = Regex::new(r"^[1-9A-HJ-NP-Za-km-z]+$").unwrap();
+    if !re.is_match(address) {
+        return false;
+    }
+
+    // Additional checks:
+    // 1. First character should be 1-5 (most common case)
+    if !address.starts_with(|c: char| ('1'..='5').contains(&c)) {
+        return false;
+    }
+
+    // 2. Try to decode as base58 to verify it's a valid encoding
+    // (This is optional as the regex should catch most invalid cases)
+    bs58::decode(address).into_vec().is_ok_and(|v| v.len() == 32)
+}
+
  /*In this code, we define a  Args  struct using the  clap  crate to parse command-line arguments. The struct has two fields:  address  and  blockchain . The  address  field is the blockchain address to validate, and the  blockchain  field is the blockchain type ( eth  or  btc ). 
  The  main  function parses the command-line arguments using the  Args::parse()  method. It then calls the appropriate validation function based on the blockchain type. If the address is valid, it prints a success message; otherwise, it prints an error message. 
  The  validate_eth_address  function checks if the Ethereum address is valid. It first checks if the address starts with  0x  and has a length of 42 characters. Then, it checks if the address is a valid hexadecimal string. If the address contains uppercase characters, it calls the  validate_eth_checksum  function to validate the checksum. 

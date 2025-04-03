@@ -7,3 +7,5 @@ edition = "2021"
 clap = { version = "4.4", features = ["derive"] }
 hex = "0.4"
 sha3 = "0.10"
+regex = "1"
+bs58 = "0.5"
